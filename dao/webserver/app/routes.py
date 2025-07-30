@@ -12,6 +12,13 @@ from logging.handlers import TimedRotatingFileHandler
 from dao.prog.da_config import Config
 from dao.prog.da_report import Report
 from dao.prog.version import __version__
+import time
+import fnmatch
+from functools import lru_cache
+import re
+
+#  één lijst per view, plus de mtime van de map
+_flist_cache: dict[str, dict[str, object]] = {}
 
 web_datapath = "static/data/"
 app_datapath = "app/static/data/"
@@ -185,22 +192,63 @@ bewerkingen = {
     },
 }
 
+def get_file_list(active_view: str, *, force_refresh: bool = False) -> list:
+    """
+    Leest (en sorteert) de bestanden voor 'grafiek' of 'tabel'.
+    De lijst wordt alleen opnieuw opgebouwd wanneer de directory-mtime verandert
+    of wanneer force_refresh=True is opgegeven.
+    """
+    if active_view == "grafiek":
+        dir_path = os.path.join(app_datapath, "images")
+        pattern = "*.png"
+    else:
+        dir_path = os.path.join(app_datapath, "log")
+        pattern = "*.log"
 
-def get_file_list(path: str, pattern: str) -> list:
-    """
-    get a time-ordered file list with name and modified time
-    :parameter path: folder
-    :parameter pattern: wildcards to search for
-    """
-    flist = []
-    for f in os.listdir(path):
-        if fnmatch.fnmatch(f, pattern):
-            fullname = os.path.join(path, f)
-            flist.append({"name": f, "time": os.path.getmtime(fullname)})
-            # print(f, time.ctime(os.path.getmtime(f)))
-    flist.sort(key=lambda x: x.get("time"), reverse=True)
+    dir_mtime = os.stat(dir_path).st_mtime
+    cache_key = active_view
+
+    # Gebruik de bestaande lijst zolang de map niet gewijzigd is
+    if (
+        not force_refresh
+        and cache_key in _flist_cache
+        and _flist_cache[cache_key]["mtime"] == dir_mtime
+    ):
+        return _flist_cache[cache_key]["list"]
+
+    # --- directory is gewijzigd (of geforceerd) → opnieuw inlezen ---
+    flist: list[dict] = []
+    # Die dubbele punt : in bestandsnamen is een beetje tricky. 
+    # tibber_yyyy-mm-dd__HH:MM:SS kan als snel 
+    # tibber_yyyy-mm-dd__HH_MM_SS worden als hij bijvoorbeeld in een tar-bestand heeft gezeten.
+    # Daarom beide varianten ondersteunen. Seconden SS ook niet altijd aanwezig.
+    ts_rx = re.compile(r"_(\d{4}-\d{2}-\d{2}__\d{2}[:_]\d{2}(?:[:_]\d{2})?)")
+
+    with os.scandir(dir_path) as it:       # één syscall per bestand
+        for entry in it:
+            if not entry.is_file() or not fnmatch.fnmatch(entry.name, pattern):
+                continue
+
+            # LOG: timestamp uit bestandsnaam
+            if pattern == "*.log":
+                m = ts_rx.search(entry.name)
+                if m:
+                    try:
+                        ts_txt = m.group(1).replace(":", "_")      # ':' → '_'
+                        ts = datetime.datetime.strptime(ts_txt, "%Y-%m-%d__%H_%M_%S").timestamp()
+                        flist.append({"name": entry.name, "time": ts})
+                        continue
+                    except ValueError:
+                        pass  # val terug op stat()
+
+            # PNG of fallback
+            flist.append({"name": entry.name, "time": entry.stat().st_mtime})
+
+    flist.sort(key=lambda x: x["time"], reverse=True)
+
+    # cache bijwerken
+    _flist_cache[cache_key] = {"mtime": dir_mtime, "list": flist}
     return flist
-
 
 @app.route("/", methods=["POST", "GET"])
 def menu():
@@ -241,6 +289,7 @@ def home():
     active_time = None
     action = None
     confirm_delete = False
+    index = 0  # Initialize index with a default value
 
     if config is not None:
         battery_options = config.get(["battery"])
@@ -263,6 +312,14 @@ def home():
             action = lst["action"][0]
         if "file_delete" in lst:
             confirm_delete = lst["file_delete"][0] == "delete"
+        if "file_select" in lst:
+            # Selecteer direct een bestand op basis van de dropdown
+            try:
+                selected_index = int(lst["file_select"][0])
+                index = selected_index
+                active_time = None  # Reset active_time zodat de oude logica niet interfereert
+            except Exception:
+                pass
 
     if active_view == "grafiek":
         active_map = "/images/"
@@ -270,8 +327,7 @@ def home():
     else:
         active_map = "/log/"
         active_filter = "*.log"
-    flist = get_file_list(app_datapath + active_map, active_filter)
-    index = 0
+    flist = get_file_list(active_view, force_refresh=False)
     if active_time:
         for i in range(len(flist)):
             if flist[i]["time"] == active_time:
@@ -287,7 +343,7 @@ def home():
         index = len(flist) - 1
     if action == "delete" and confirm_delete:
         os.remove(app_datapath + active_map + flist[index]["name"])
-        flist = get_file_list(app_datapath + active_map, active_filter)
+        flist = get_file_list(active_view, force_refresh=True)
         index = min(len(flist) - 1, index)
     if len(flist) > 0:
         active_time = str(flist[index]["time"])
@@ -315,6 +371,8 @@ def home():
         tabel=tabel,
         active_time=active_time,
         version=__version__,
+        flist=flist,  # <-- voeg de filelist toe aan de template
+        file_index=index,  # <-- voeg de actieve index toe aan de template
     )
 
 
@@ -602,8 +660,39 @@ def run_api(bewerking: str):
         )
         with open(filename, "w") as f:
             f.write(log_content)
+        get_file_list("tabel",  force_refresh=True) # force refresh tabel file list
         return render_template(
             "api_run.html", log_content=log_content, version=__version__
         )
     else:
         return "Onbekende bewerking: " + bewerking
+    
+@app.get("/api/files")
+def api_files():
+    view = request.args.get("view", "grafiek")
+    flist = get_file_list(view, force_refresh=False)
+    return {"files": flist}
+
+@app.template_filter('prettyfile')
+def prettyfile(name: str) -> str:
+    # tibber_2025-07-21__13_50.log, prices_2025-07-27__12_55.log, meteo_2025-07-20__04_28.log, clean_..., calc_debug_...
+    m = re.match(r'(?P<prefix>[a-zA-Z_]+)_(?P<date>\d{4}-\d{2}-\d{2})__(?P<h>\d{2})[:_](?P<m>\d{2})(?:[:_](?P<s>\d{2}))?\.log$', name)
+    if m:
+        label = m.group('prefix').replace('_', ' ').strip('_')
+        dt = f"{m.group('date')} {m.group('h')}:{m.group('m')}"
+        if m.group('s'):
+            dt += f":{m.group('s')}"
+        return f"{label} – {dt}"
+
+    # dashboard.log.20250726
+    m2 = re.match(r'(dashboard\.log)\.(\d{8})$', name)
+    if m2:
+        d = datetime.strptime(m2.group(2), "%Y%m%d").strftime("%Y-%m-%d")
+        return f"dashboard – {d}"
+
+    # dashboard.log (geen datum)
+    if name == "dashboard.log":
+        return "dashboard (latest)"
+
+    # fallback
+    return name

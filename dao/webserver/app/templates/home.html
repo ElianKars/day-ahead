@@ -62,9 +62,18 @@
       <button name="action" class="btn btn_mid" value="first">
         <img src="static/first.png" alt="last" border="0" style="display:inline-block; height:1.5em; width:auto;" />
       </button>
-      <button name="action" class="btn btn_right" onclick="confirmation()" value="delete">
+      <button name="action" class="btn btn_mid" onclick="confirmation()" value="delete">
         <img src="static/delete.png" alt="last" border="0" style="display:inline-block; height:1.5em; width:auto;" />
       </button>
+      {% if active_view != "grafiek" %}
+        <select name="file_select" id="file_select" onchange="this.form.submit()">
+          {% for f in flist %}
+            <option value="{{ loop.index0 }}" {% if file_index == loop.index0 %}selected{% endif %}>
+              {{ f.name|prettyfile }} 
+            </option>
+          {% endfor %}
+        </select>
+      {% endif %}
     </div>
   </div>
 </div>

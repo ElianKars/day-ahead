@@ -88,6 +88,23 @@ code-input {
   font-size: 0;
   }
 
+.select select {
+  height: 40px;
+  border: none;
+  border-left: 1px solid white;
+  background-color: inherit;
+  color: black;
+  padding: 0 5px;
+  font-size: 18px;
+  margin: 0;
+  vertical-align: top;
+  cursor: pointer;
+}
+
+.select select:hover {
+  background-color: white;
+}
+
 .spacer {
  padding: 5px;
  }
