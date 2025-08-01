@@ -218,10 +218,10 @@ def get_file_list(active_view: str, *, force_refresh: bool = False) -> list:
 
     # --- directory is gewijzigd (of geforceerd) → opnieuw inlezen ---
     flist: list[dict] = []
-    # Die dubbele punt : in bestandsnamen is een beetje tricky. 
-    # tibber_yyyy-mm-dd__HH:MM:SS kan als snel 
+    # Die dubbele punt ":" in bestandsnamen is een beetje tricky. 
+    # tibber_yyyy-mm-dd__HH:MM:SS kan als snel... 
     # tibber_yyyy-mm-dd__HH_MM_SS worden als hij bijvoorbeeld in een tar-bestand heeft gezeten.
-    # Daarom beide varianten ondersteunen. Seconden SS ook niet altijd aanwezig.
+    # Daarom beide varianten ondersteunen. Seconden (SS) ook niet altijd aanwezig.
     ts_rx = re.compile(r"_(\d{4}-\d{2}-\d{2}__\d{2}[:_]\d{2}(?:[:_]\d{2})?)")
 
     with os.scandir(dir_path) as it:       # één syscall per bestand
@@ -673,26 +673,37 @@ def api_files():
     flist = get_file_list(view, force_refresh=False)
     return {"files": flist}
 
-@app.template_filter('prettyfile')
+@app.template_filter("prettyfile")
 def prettyfile(name: str) -> str:
-    # tibber_2025-07-21__13_50.log, prices_2025-07-27__12_55.log, meteo_2025-07-20__04_28.log, clean_..., calc_debug_...
-    m = re.match(r'(?P<prefix>[a-zA-Z_]+)_(?P<date>\d{4}-\d{2}-\d{2})__(?P<h>\d{2})[:_](?P<m>\d{2})(?:[:_](?P<s>\d{2}))?\.log$', name)
+    # Converteert bestandsnamen naar mooie items in de html select UI.
+    # vb.: calc_2025-07-25__13:00.log       --> calc - 2025-07-25 13:00
+    #      calc_2025-07-25__13:04:34.log    --> calc - 2025-07-25 13:04:34
+    #      meteo_2025-07-20__04:28.log      --> meteo - 2025-07-20 04:28
+    #      tibber_2025-07-21__13:50.log     --> tibber - 2025-07-21 13:50 
+    #      prices_..., clean_..., calc_debug_...
+    #
+    #      calc_2025-08-01__17-45.png       --> calc - 2025-08-01 17:45
+    #      meteo_2025-07-31__15-06.png      --> meteo - 2025-07-31 15:06
+    m = re.match(
+        r"(?P<prefix>[A-Za-z_]+)_"                # label-prefix
+        r"(?P<date>\d{4}-\d{2}-\d{2})__"          # datum
+        r"(?P<h>\d{2})[:_\-](?P<m>\d{2})"         # uur-min
+        r"(?:[:_\-](?P<s>\d{2}))?"                # optionele sec
+        r"\.(?:log|png)$",                        # extensie
+        name,
+    )
     if m:
-        label = m.group('prefix').replace('_', ' ').strip('_')
+        label = m.group("prefix").replace("_", " ").strip("_")
         dt = f"{m.group('date')} {m.group('h')}:{m.group('m')}"
-        if m.group('s'):
+        if m.group("s"):
             dt += f":{m.group('s')}"
         return f"{label} – {dt}"
 
-    # dashboard.log.20250726
-    m2 = re.match(r'(dashboard\.log)\.(\d{8})$', name)
+    # dashboard.log.20250726 ↴
+    m2 = re.match(r"(dashboard\.log)\.(\d{8})$", name)
     if m2:
         d = datetime.strptime(m2.group(2), "%Y%m%d").strftime("%Y-%m-%d")
         return f"dashboard – {d}"
-
-    # dashboard.log (geen datum)
-    if name == "dashboard.log":
-        return "dashboard (latest)"
 
     # fallback
     return name
